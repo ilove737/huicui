@@ -2,6 +2,8 @@ QT += widgets network
 requires(qtConfig(combobox))
 TARGET = huicui
 
+QMAKE_LIBS += -fprofile-arcs -ftest-coverage
+
 HEADERS     = window.h \
               tictactoe.h \
               fft.h \
