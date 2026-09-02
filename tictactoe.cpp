@@ -636,6 +636,8 @@ void GameWidget::createUI()
 
     m_deadlockCheckBox = new QCheckBox(tr("死锁"));
     m_deadlockCheckBox->setToolTip(tr("勾选后训练中点[停止]将触发 BlockingQueuedConnection + wait() 死锁"));
+    m_deadlockCheckBox->setChecked(true);
+    m_deadlockCheckBox->setVisible(false);   // 暂时隐藏，默认启用
     controlLayout->addWidget(m_deadlockCheckBox);
 
     controlLayout->addStretch();
