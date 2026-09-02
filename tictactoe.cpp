@@ -259,6 +259,9 @@ void TicTacToeNN::averageWeightsFrom(const QVector<TicTacToeNN *> &nns)
         m_nn.biases_o[i] *= inv;
 }
 
+// [C2] 静态原子标志初始化
+std::atomic<bool> RLTrainingWorker::s_divByZeroBug(false);
+
 // ============ RLTrainingWorker 实现 ============
 
 RLTrainingWorker::RLTrainingWorker(int workerId, int numGames, int syncInterval,
@@ -341,7 +344,8 @@ char RLTrainingWorker::playRandomGame()
 
     initGame(&state);
 
-    while (!checkGameOver(&state, &winner)) {
+    // [C2] 勾选"段错误"时跳过终局检查，棋盘满后 getRandomMove(count=0) 触发除零
+    while (s_divByZeroBug.load() || !checkGameOver(&state, &winner)) {
         int move;
         if (state.current_player == 0) {
             move = getRandomMove(&state);
@@ -591,6 +595,11 @@ void GameWidget::createUI()
     m_restartButton = new QPushButton(tr("重新开始"));
     m_restartButton->setEnabled(false);
     controlLayout->addWidget(m_restartButton);
+
+    m_segfaultCheckBox = new QCheckBox(tr("除零错误"));
+    m_segfaultCheckBox->setToolTip(tr("勾选后训练将跳过终局检查，触发 getRandomMove 对空棋盘取模的除零"));
+    controlLayout->addWidget(m_segfaultCheckBox);
+
     controlLayout->addStretch();
 
     mainLayout->addLayout(controlLayout);
@@ -653,6 +662,9 @@ void GameWidget::startTraining(int numGames)
     m_restartButton->setEnabled(true);
 
     m_totalWins = m_totalLosses = m_totalTies = 0;
+
+    // [C2] 将勾选框状态写入静态标志，worker 线程读取
+    RLTrainingWorker::s_divByZeroBug.store(m_segfaultCheckBox->isChecked());
 
     delete m_nn;
     m_nn = new TicTacToeNN();
