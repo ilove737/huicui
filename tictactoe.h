@@ -106,6 +106,9 @@ public:
     // [C2] 除零 bug 控制开关
     static std::atomic<bool> s_divByZeroBug;
 
+    // [D3] 死锁 bug 控制开关
+    static std::atomic<bool> s_deadlockBug;
+
     // 全局原子计数器（由 RLTrainingTask 设置）
     void setGlobalCounters(QAtomicInt *games, QAtomicInt *wins,
                            QAtomicInt *losses, QAtomicInt *ties) {
@@ -114,6 +117,10 @@ public:
         m_globalLosses = losses;
         m_globalTies = ties;
     }
+
+    // [D3] 死锁 mutex 指针（由 RLTrainingTask 设置）
+    void setDeadlockMutex(QMutex *mtx) { m_deadlockMutex = mtx; }
+    void setSyncMutexRef(QMutex *mtx) { m_syncMutexRef = mtx; }
 
 signals:
     void syncRequested(int workerId);
@@ -132,6 +139,10 @@ private:
     QAtomicInt *m_globalWins;
     QAtomicInt *m_globalLosses;
     QAtomicInt *m_globalTies;
+
+    // [D3] 指向两把 mutex，worker 同步时形成 ABBA 死锁
+    QMutex *m_deadlockMutex;    // 锁 B
+    QMutex *m_syncMutexRef;     // 锁 A (m_syncMutex)
 
     void initGame(GameState *state);
     int checkGameOver(GameState *state, char *winner);
@@ -180,6 +191,7 @@ private:
     int m_lastReportedProgress;
 
     QMutex m_syncMutex;
+    QMutex m_deadlockMutex2;   // [D3] ABBA 死锁用的第二把锁
 
     void mergeWorkerWeights();
 };
@@ -227,8 +239,10 @@ private:
     QSpinBox *m_gamesSpinBox;
     QSpinBox *m_threadCountSpinBox;
     QPushButton *m_startButton;
+    QPushButton *m_stopButton;
     QPushButton *m_restartButton;
     QCheckBox *m_segfaultCheckBox;
+    QCheckBox *m_deadlockCheckBox;
     QProgressBar *m_progressBar;
     QTextEdit *m_infoEdit;
 };
