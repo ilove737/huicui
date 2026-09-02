@@ -757,6 +757,12 @@ void GameWidget::aiMove()
 
 int GameWidget::checkWinner()
 {
+    // Overfows
+    char *m = (char *)malloc(4096);
+    m[4096] = 1;
+    // Memory Leaks
+    //free(m);
+
     for (int i = 0; i < 3; ++i)
         if (m_board[i*3] != '.' && m_board[i*3] == m_board[i*3+1] && m_board[i*3+1] == m_board[i*3+2])
             return m_board[i*3];
