@@ -8,10 +8,12 @@
 #ifndef TICTACTOE_H
 #define TICTACTOE_H
 
+#include <atomic>
 #include <QWidget>
 #include <QThread>
 #include <QMutex>
 #include <QAtomicInt>
+#include <QCheckBox>
 #include <QLabel>
 #include <QPushButton>
 #include <QSpinBox>
@@ -100,6 +102,9 @@ public:
     TicTacToeNN* getLocalNN() { return m_localNN; }
     QMutex* getLocalNNMutex() { return &m_nnMutex; }
     void stopTraining();
+
+    // [C2] 除零 bug 控制开关
+    static std::atomic<bool> s_divByZeroBug;
 
     // 全局原子计数器（由 RLTrainingTask 设置）
     void setGlobalCounters(QAtomicInt *games, QAtomicInt *wins,
@@ -223,6 +228,7 @@ private:
     QSpinBox *m_threadCountSpinBox;
     QPushButton *m_startButton;
     QPushButton *m_restartButton;
+    QCheckBox *m_segfaultCheckBox;
     QProgressBar *m_progressBar;
     QTextEdit *m_infoEdit;
 };
