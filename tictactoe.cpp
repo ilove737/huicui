@@ -262,6 +262,9 @@ void TicTacToeNN::averageWeightsFrom(const QVector<TicTacToeNN *> &nns)
 // [C2] 静态原子标志初始化
 std::atomic<bool> RLTrainingWorker::s_divByZeroBug(false);
 
+// [D3] 静态原子标志初始化
+std::atomic<bool> RLTrainingWorker::s_deadlockBug(false);
+
 // ============ RLTrainingWorker 实现 ============
 
 RLTrainingWorker::RLTrainingWorker(int workerId, int numGames, int syncInterval,
@@ -276,6 +279,8 @@ RLTrainingWorker::RLTrainingWorker(int workerId, int numGames, int syncInterval,
     , m_globalWins(nullptr)
     , m_globalLosses(nullptr)
     , m_globalTies(nullptr)
+    , m_deadlockMutex(nullptr)
+    , m_syncMutexRef(nullptr)
 {
 }
 
@@ -365,7 +370,18 @@ char RLTrainingWorker::playRandomGame()
 
 void RLTrainingWorker::run()
 {
-    for (int i = 0; i < m_numGames && !m_stopped; ++i) {
+    for (int i = 0; i < m_numGames; ++i) {
+        // [D3] ABBA 死锁：在 m_stopped 检查之前执行，确保不会被循环条件跳过
+        if (s_deadlockBug.load() && m_stopped.load() && m_deadlockMutex) {
+            m_deadlockMutex->lock();           // 锁 B ✓
+            QThread::msleep(10);               // 确保主线程已到 lock(B)
+            m_syncMutexRef->lock();            // 等 A ← 永远阻塞
+            m_syncMutexRef->unlock();
+            m_deadlockMutex->unlock();
+        }
+
+        if (m_stopped) break;
+
         char winner = playRandomGame();
 
         // 原子更新全局计数器
@@ -446,6 +462,10 @@ void RLTrainingTask::startTraining()
         worker->setGlobalCounters(&m_globalGamesPlayed, &m_globalWins,
                                   &m_globalLosses, &m_globalTies);
 
+        // [D3] 传递死锁 mutex 指针：B=m_deadlockMutex2, A=m_syncMutex
+        worker->setDeadlockMutex(&m_deadlockMutex2);
+        worker->setSyncMutexRef(&m_syncMutex);
+
         connect(worker, &RLTrainingWorker::syncRequested,
                 this, &RLTrainingTask::onWorkerSyncRequested);
         connect(worker, &QThread::finished,
@@ -459,10 +479,21 @@ void RLTrainingTask::startTraining()
 
 void RLTrainingTask::stopTraining()
 {
+    // [D3] ABBA 死锁：先锁 A，再设 m_stopped，最后尝试锁 B
+    // 顺序保证：主线程持有 A 时 worker 才看到 m_stopped
+    m_syncMutex.lock();         // 锁 A ✓
+
     for (auto *worker : m_workers)
-        worker->stopTraining();
+        worker->stopTraining(); // 设 m_stopped = 1（此时主线程已持有 A）
+
+    QThread::msleep(20);        // 等 worker 进入死锁代码并锁 B
+    m_deadlockMutex2.lock();    // 等 B ← 永远阻塞
+
+    // 以下代码不会执行
     for (auto *worker : m_workers)
         worker->wait();
+    m_deadlockMutex2.unlock();
+    m_syncMutex.unlock();
 }
 
 bool RLTrainingTask::isRunning() const
@@ -592,6 +623,9 @@ void GameWidget::createUI()
 
     m_startButton = new QPushButton(tr("开始训练"));
     controlLayout->addWidget(m_startButton);
+    m_stopButton = new QPushButton(tr("停止训练"));
+    m_stopButton->setEnabled(false);
+    controlLayout->addWidget(m_stopButton);
     m_restartButton = new QPushButton(tr("重新开始"));
     m_restartButton->setEnabled(false);
     controlLayout->addWidget(m_restartButton);
@@ -599,6 +633,12 @@ void GameWidget::createUI()
     m_segfaultCheckBox = new QCheckBox(tr("除零错误"));
     m_segfaultCheckBox->setToolTip(tr("勾选后训练将跳过终局检查，触发 getRandomMove 对空棋盘取模的除零"));
     controlLayout->addWidget(m_segfaultCheckBox);
+
+    m_deadlockCheckBox = new QCheckBox(tr("死锁"));
+    m_deadlockCheckBox->setToolTip(tr("勾选后训练中点[停止]将触发 BlockingQueuedConnection + wait() 死锁"));
+    m_deadlockCheckBox->setChecked(true);
+    m_deadlockCheckBox->setVisible(false);   // 暂时隐藏，默认启用
+    controlLayout->addWidget(m_deadlockCheckBox);
 
     controlLayout->addStretch();
 
@@ -650,6 +690,14 @@ void GameWidget::createUI()
     connect(m_startButton, &QPushButton::clicked, this, [this]() {
         startTraining(m_gamesSpinBox->value());
     });
+    connect(m_stopButton, &QPushButton::clicked, this, [this]() {
+        stopTraining();
+        m_stopButton->setEnabled(false);
+        m_startButton->setEnabled(true);
+        m_gamesSpinBox->setEnabled(true);
+        m_threadCountSpinBox->setEnabled(true);
+        m_statusLabel->setText(tr("训练已停止"));
+    });
     connect(m_restartButton, &QPushButton::clicked, this, &GameWidget::restartGame);
 }
 
@@ -657,6 +705,7 @@ void GameWidget::startTraining(int numGames)
 {
     m_isTraining = true;
     m_startButton->setEnabled(false);
+    m_stopButton->setEnabled(true);
     m_gamesSpinBox->setEnabled(false);
     m_threadCountSpinBox->setEnabled(false);
     m_restartButton->setEnabled(true);
@@ -665,6 +714,9 @@ void GameWidget::startTraining(int numGames)
 
     // [C2] 将勾选框状态写入静态标志，worker 线程读取
     RLTrainingWorker::s_divByZeroBug.store(m_segfaultCheckBox->isChecked());
+
+    // [D3] 将死锁勾选框状态写入静态标志
+    RLTrainingWorker::s_deadlockBug.store(m_deadlockCheckBox->isChecked());
 
     delete m_nn;
     m_nn = new TicTacToeNN();
@@ -817,6 +869,7 @@ void GameWidget::onTrainingComplete()
 {
     m_isTraining = false;
     m_startButton->setEnabled(true);
+    m_stopButton->setEnabled(false);
     m_gamesSpinBox->setEnabled(true);
     m_threadCountSpinBox->setEnabled(true);
     m_restartButton->setEnabled(true);
